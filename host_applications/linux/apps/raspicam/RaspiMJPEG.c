@@ -2,6 +2,7 @@
 Copyright (c) 2013, Broadcom Europe Ltd
 Copyright (c) 2013, Silvan Melchior
 Copyright (c) 2013, James Hughes
+Copyright (c) 2014, Ralf Schmidt
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -50,7 +51,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  * Usage information in README_RaspiMJPEG.md
  */
 
-#define VERSION "4.1"
+#define VERSION "4.2"
 
 #include <stdio.h>
 #include <stdlib.h>
