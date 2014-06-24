@@ -61,7 +61,7 @@ enum {
    MMAL_PARAMETER_REDEYE,                    /**< Takes a @ref MMAL_PARAMETER_REDEYE_T */
    MMAL_PARAMETER_FOCUS,                     /**< Takes a @ref MMAL_PARAMETER_FOCUS_T */
    MMAL_PARAMETER_FOCAL_LENGTHS,             /**< Unused? */
-   MMAL_PARAMETER_EXPOSURE_COMP,             /**< Takes a @ref MMAL_PARAMETER_INT32_T */
+   MMAL_PARAMETER_EXPOSURE_COMP,             /**< Takes a @ref MMAL_PARAMETER_INT32_T or MMAL_PARAMETER_RATIONAL_T */
    MMAL_PARAMETER_ZOOM,                      /**< Takes a @ref MMAL_PARAMETER_SCALEFACTOR_T */
    MMAL_PARAMETER_MIRROR,                    /**< Takes a @ref MMAL_PARAMETER_MIRROR_T */
 
@@ -123,7 +123,8 @@ enum {
    MMAL_PARAMETER_SW_SHARPEN_DISABLE,        /**< Takes a @ref MMAL_PARAMETER_BOOLEAN_T */
    MMAL_PARAMETER_FLASH_REQUIRED,            /**< Takes a @ref MMAL_PARAMETER_BOOLEAN_T */
    MMAL_PARAMETER_SW_SATURATION_DISABLE,     /**< Takes a @ref MMAL_PARAMETER_BOOLEAN_T */
-   MMAL_PARAMETER_SHUTTER_SPEED              /**< Takes a @ref MMAL_PARAMETER_UINT32_T */
+   MMAL_PARAMETER_SHUTTER_SPEED,             /**< Takes a @ref MMAL_PARAMETER_UINT32_T */
+   MMAL_PARAMETER_CUSTOM_AWB_GAINS,          /**< Takes a @ref MMAL_PARAMETER_AWB_GAINS_T */
 };
 
 /** Thumbnail configuration parameter type */
@@ -240,6 +241,8 @@ typedef enum MMAL_PARAM_IMAGEFX_T
    MMAL_PARAM_IMAGEFX_COLOURPOINT,
    MMAL_PARAM_IMAGEFX_COLOURBALANCE,
    MMAL_PARAM_IMAGEFX_CARTOON,
+   MMAL_PARAM_IMAGEFX_DEINTERLACE_DOUBLE,
+   MMAL_PARAM_IMAGEFX_DEINTERLACE_ADV,
    MMAL_PARAM_IMAGEFX_MAX = 0x7fffffff
 } MMAL_PARAM_IMAGEFX_T;
 
@@ -654,5 +657,13 @@ typedef struct MMAL_PARAMETER_ZEROSHUTTERLAG_T
                                               *  use the last preview raw image for the stills capture
                                               */
 } MMAL_PARAMETER_ZEROSHUTTERLAG_T;
+
+typedef struct MMAL_PARAMETER_AWB_GAINS_T
+{
+   MMAL_PARAMETER_HEADER_T hdr;
+
+   MMAL_RATIONAL_T r_gain;                   /**< Red gain */
+   MMAL_RATIONAL_T b_gain;                   /**< Blue gain */
+} MMAL_PARAMETER_AWB_GAINS_T;
 
 #endif  /* MMAL_PARAMETERS_CAMERA_H */
