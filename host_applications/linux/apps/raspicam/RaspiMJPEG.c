@@ -53,6 +53,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #define VERSION "4.2"
 
+// We use some GNU extensions (asprintf)
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -87,6 +90,17 @@ unsigned char timelapse=0, mp4box=0, running=1, autostart=1, quality=85, idle=0,
 int time_between_pic;
 time_t currTime;
 struct tm *localTime;
+
+/** Struct used to pass information in encoder port userdata to callback
+ */
+typedef struct
+{
+  FILE *file_handle;                   /// File handle to write buffer data to.
+  VCOS_SEMAPHORE_T complete_semaphore; /// semaphore which is posted when we reach end of frame (indicates end of capture or fault)
+} PORT_USERDATA;
+
+PORT_USERDATA callback_data;
+          
   
 void error (const char *string) {
 
@@ -119,14 +133,23 @@ static void jpegencoder_buffer_callback (MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T
 
   int bytes_written = buffer->length;
   char *filename_temp, *filename_temp2;
+  
+  //fprintf(stderr, "%s: >>> buffer->length=%d, image_cnt=%d, mjpeg_cnt=%d\n", 
+  //  __FUNCTION__, buffer->length, image_cnt, mjpeg_cnt);
 
   if(mjpeg_cnt == 0) {
     if(!jpegoutput_file) {
       asprintf(&filename_temp, jpeg_filename, image_cnt);
       asprintf(&filename_temp2, "%s.part", filename_temp);
       jpegoutput_file = fopen(filename_temp2, "wb");
-      free(filename_temp);
-      free(filename_temp2);
+      if(filename_temp) {
+        free(filename_temp);
+        filename_temp = NULL;
+      }
+      if(filename_temp2) {
+        free(filename_temp2);
+        filename_temp2 = NULL;
+      }
       if(!jpegoutput_file) error("Could not open mjpeg-destination");
     }
     if(buffer->length) {
@@ -137,7 +160,8 @@ static void jpegencoder_buffer_callback (MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T
     if(bytes_written != buffer->length) error("Could not write all bytes");
   }
   
-  if(buffer->flags & MMAL_BUFFER_HEADER_FLAG_FRAME_END) {
+  if(buffer->flags & (MMAL_BUFFER_HEADER_FLAG_FRAME_END|MMAL_BUFFER_HEADER_FLAG_TRANSMISSION_FAILED)) {
+    //fprintf(stderr, "%s: buffer->flags=0x%x\n", __FUNCTION__, buffer->flags);
     mjpeg_cnt++;
     if(mjpeg_cnt == divider) {
       fclose(jpegoutput_file);
@@ -145,8 +169,14 @@ static void jpegencoder_buffer_callback (MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T
       asprintf(&filename_temp, jpeg_filename, image_cnt);
       asprintf(&filename_temp2, "%s.part", filename_temp);
       rename(filename_temp2, filename_temp);
-      free(filename_temp);
-      free(filename_temp2);
+      if(filename_temp) {
+        free(filename_temp);
+        filename_temp = NULL;
+      }
+      if(filename_temp2) {
+        free(filename_temp2);
+        filename_temp2 = NULL;
+      }
       image_cnt++;
       mjpeg_cnt = 0;
     }
@@ -162,32 +192,56 @@ static void jpegencoder_buffer_callback (MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T
 
     if (new_buffer) status = mmal_port_send_buffer(port, new_buffer);
     if (!new_buffer || status != MMAL_SUCCESS) error("Could not send buffers to port");
+  } else {
+    fprintf(stderr, "%s: ERROR - port disabled, could not get/send buffer\n", __FUNCTION__);
   }
 
+  //fprintf(stderr, "%s: <<< buffer->length=%d, image_cnt=%d, mjpeg_cnt=%d\n", 
+  //  __FUNCTION__, buffer->length, image_cnt, mjpeg_cnt);
 }
 
 static void jpegencoder2_buffer_callback (MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buffer) {
-
+  int complete = 0;
   int bytes_written = buffer->length;
-
-  if(buffer->length) {
-    mmal_buffer_header_mem_lock(buffer);
-    bytes_written = fwrite(buffer->data, 1, buffer->length, jpegoutput2_file);
-    mmal_buffer_header_mem_unlock(buffer);
-  }
-  if(bytes_written != buffer->length) error("Could not write all bytes");
   
-  if(buffer->flags & MMAL_BUFFER_HEADER_FLAG_FRAME_END) {
-    fclose(jpegoutput2_file);
-    if(status_filename != 0) {
-      if(!timelapse) {
-        status_file = fopen(status_filename, "w");
-        fprintf(status_file, "ready");
-        fclose(status_file);
-      }
+  //fprintf(stderr, "%s: >>> buffer->length=%d\n", __FUNCTION__, buffer->length);
+  
+  // Use the userdata field.
+  PORT_USERDATA *pData = (PORT_USERDATA *)port->userdata;
+  
+  if(pData) {
+    if(buffer->length) {
+      mmal_buffer_header_mem_lock(buffer);
+      bytes_written = fwrite(buffer->data, 1, buffer->length, jpegoutput2_file);
+      mmal_buffer_header_mem_unlock(buffer);
     }
-    image2_cnt++;
+    if(bytes_written != buffer->length) {
+      complete = 1;
+      error("Could not write all bytes");
+    }
+  
+    if(buffer->flags & (MMAL_BUFFER_HEADER_FLAG_FRAME_END|MMAL_BUFFER_HEADER_FLAG_TRANSMISSION_FAILED)) {
+      //fprintf(stderr, "%s: buffer->flags=0x%x\n", __FUNCTION__, buffer->flags);
+      //fprintf(stderr, "%s: - jpegoutput2_file\n", __FUNCTION__);
+      fclose(jpegoutput2_file);
+      if(status_filename != 0) {
+        if(!timelapse) {
+          status_file = fopen(status_filename, "w");
+          fprintf(status_file, "ready");
+          fclose(status_file);
+        }
+      }
+      image2_cnt++;
+    }
+  } else {
+    fprintf(stderr, "%s: Received buffer with no userdata\n", __FUNCTION__);
+  }
+  
+  // Do not forget to check image end to cleanup state.
+  if(buffer->flags & (MMAL_BUFFER_HEADER_FLAG_FRAME_END|MMAL_BUFFER_HEADER_FLAG_TRANSMISSION_FAILED)) {
+    complete = 1;
     capturing = 0;
+    //fprintf(stderr, "%s: capturing=0\n", __FUNCTION__);
   }
 
   mmal_buffer_header_release(buffer);
@@ -200,8 +254,14 @@ static void jpegencoder2_buffer_callback (MMAL_PORT_T *port, MMAL_BUFFER_HEADER_
 
     if (new_buffer) status = mmal_port_send_buffer(port, new_buffer);
     if (!new_buffer || status != MMAL_SUCCESS) error("Could not send buffers to port");
+  } else {
+    fprintf(stderr, "%s: ERROR - port disabled, could not get/send buffer\n", __FUNCTION__);
   }
 
+  if(complete) {
+    fprintf(stderr, "%s: vcos_semaphore_post\n", __FUNCTION__);
+    vcos_semaphore_post(&(pData->complete_semaphore));
+  }
 }
 
 static void h264encoder_buffer_callback (MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buffer)  {
@@ -410,9 +470,13 @@ void cam_set_bitrate () {
 }
 
 void start_all (void) {
-
   MMAL_ES_FORMAT_T *format;
   int max, i;
+#if 1
+  VCOS_STATUS_T vcos_status;
+#endif
+  
+  fprintf(stderr, "%s: >>>\n", __FUNCTION__);
   
   //
   // create camera
@@ -438,8 +502,8 @@ void start_all (void) {
   mmal_port_parameter_set(camera->control, &cam_config.hdr);
   
   format = camera->output[0]->format;
-  format->es->video.width = video_width;
-  format->es->video.height = video_height;
+  format->es->video.width = VCOS_ALIGN_UP(video_width, 32);
+  format->es->video.height = VCOS_ALIGN_UP(video_height, 16);
   format->es->video.crop.x = 0;
   format->es->video.crop.y = 0;
   format->es->video.crop.width = video_width;
@@ -452,8 +516,8 @@ void start_all (void) {
   format = camera->output[1]->format;
   format->encoding_variant = MMAL_ENCODING_I420;
   format->encoding = MMAL_ENCODING_OPAQUE;
-  format->es->video.width = video_width;
-  format->es->video.height = video_height;
+  format->es->video.width = VCOS_ALIGN_UP(video_width, 32);
+  format->es->video.height = VCOS_ALIGN_UP(video_height, 16);
   format->es->video.crop.x = 0;
   format->es->video.crop.y = 0;
   format->es->video.crop.width = video_width;
@@ -467,8 +531,8 @@ void start_all (void) {
   
   format = camera->output[2]->format;
   format->encoding = MMAL_ENCODING_OPAQUE;
-  format->es->video.width = image_width;
-  format->es->video.height = image_height;
+  format->es->video.width = VCOS_ALIGN_UP(image_width, 32);
+  format->es->video.height = VCOS_ALIGN_UP(image_height, 16);
   format->es->video.crop.x = 0;
   format->es->video.crop.y = 0;
   format->es->video.crop.width = image_width;
@@ -511,7 +575,8 @@ void start_all (void) {
   // create second jpeg-encoder
   //
   status = mmal_component_create(MMAL_COMPONENT_DEFAULT_IMAGE_ENCODER, &jpegencoder2);
-  if(status != MMAL_SUCCESS && status != MMAL_ENOSYS) error("Could not create image encoder 2");
+  if(status != MMAL_SUCCESS) error("Could not create image encoder 2-1");
+  if(!jpegencoder2->input_num || !jpegencoder2->output_num) error("Could not create image encoder 2-2");
 
   mmal_format_copy(jpegencoder2->output[0]->format, jpegencoder2->input[0]->format);
   jpegencoder2->output[0]->format->encoding = MMAL_ENCODING_JPEG;
@@ -582,8 +647,8 @@ void start_all (void) {
   if(status != MMAL_SUCCESS && status != MMAL_ENOSYS) error("Could not create image resizer");
   
   format = resizer->output[0]->format;
-  format->es->video.width = width;
-  format->es->video.height = height_temp;
+  format->es->video.width = VCOS_ALIGN_UP(width, 32);
+  format->es->video.height = VCOS_ALIGN_UP(height_temp, 16);
   format->es->video.crop.x = 0;
   format->es->video.crop.y = 0;
   format->es->video.crop.width = width;
@@ -612,7 +677,10 @@ void start_all (void) {
   status = mmal_port_enable(jpegencoder->output[0], jpegencoder_buffer_callback);
   if(status != MMAL_SUCCESS) error("Could not enable jpeg port");
   max = mmal_queue_length(pool_jpegencoder->queue);
-  for(i=0;i<max;i++) {
+#if 0
+  for(i=0;i<max;i++)
+#endif
+  {
     MMAL_BUFFER_HEADER_T *jpegbuffer = mmal_queue_get(pool_jpegencoder->queue);
 
     if(!jpegbuffer) error("Could not create jpeg buffer header");
@@ -625,17 +693,27 @@ void start_all (void) {
   status = mmal_connection_enable(con_cam_jpeg);
   if(status != MMAL_SUCCESS) error("Could not enable connection camera -> encoder");
   
+#if 1
+  callback_data.file_handle = NULL;  // unused at the moment
+  vcos_status = vcos_semaphore_create(&callback_data.complete_semaphore, "RaspiMJPEG-sem", 0);
+  if(vcos_status != VCOS_SUCCESS) error("Could not create vcos semaphore");
+  jpegencoder2->output[0]->userdata = (struct MMAL_PORT_USERDATA_T *)&callback_data;
+#endif
+  
   status = mmal_port_enable(jpegencoder2->output[0], jpegencoder2_buffer_callback);
   if(status != MMAL_SUCCESS) error("Could not enable jpeg port 2");
   max = mmal_queue_length(pool_jpegencoder2->queue);
-  for(i=0;i<max;i++) {
+# if 0
+  for(i=0;i<max;i++)
+#endif
+  {
     MMAL_BUFFER_HEADER_T *jpegbuffer2 = mmal_queue_get(pool_jpegencoder2->queue);
 
     if(!jpegbuffer2) error("Could not create jpeg buffer header 2");
     status = mmal_port_send_buffer(jpegencoder2->output[0], jpegbuffer2);
     if(status != MMAL_SUCCESS) error("Could not send buffers to jpeg port 2");
   }
-  
+#if 1
   //
   // settings
   //
@@ -658,36 +736,49 @@ void start_all (void) {
   cam_set_quality();
   cam_set_raw();
   cam_set_bitrate();
-
+#endif
+  fprintf(stderr, "%s: <<<\n", __FUNCTION__);   
 }
 
 
 void stop_all (void) {
 
+  fprintf(stderr, "%s: >>>\n", __FUNCTION__);
   mmal_port_disable(jpegencoder->output[0]);
+#if 1
+  mmal_port_disable(jpegencoder2->output[0]);
+  vcos_semaphore_delete(&callback_data.complete_semaphore);
+#endif
   mmal_connection_destroy(con_cam_res);
   mmal_connection_destroy(con_res_jpeg);
   mmal_port_pool_destroy(jpegencoder->output[0], pool_jpegencoder);
   mmal_component_disable(jpegencoder);
+#if 1
+  mmal_port_pool_destroy(jpegencoder2->output[0], pool_jpegencoder2);
+  mmal_component_disable(jpegencoder2);
+  mmal_component_destroy(jpegencoder2);
+#endif
   mmal_component_disable(camera);
   mmal_component_destroy(jpegencoder);
   mmal_component_destroy(h264encoder);
   mmal_component_destroy(camera);
-
+  fprintf(stderr, "%s: <<<\n", __FUNCTION__);
 }
 
 void capt_img (void) {
 
   char *filename_temp;
-
   currTime = time(NULL);
   localTime = localtime (&currTime);
   asprintf(&filename_temp, jpeg2_filename, image2_cnt, localTime->tm_year+1900, localTime->tm_mon+1, localTime->tm_mday, localTime->tm_hour, localTime->tm_min, localTime->tm_sec);
+  //fprintf(stderr, "%s: + jpegoutput2_file, filename_temp=%s\n", __FUNCTION__, filename_temp);
   jpegoutput2_file = fopen(filename_temp, "wb");
-  free(filename_temp);
+  if(filename_temp) {
+    free(filename_temp);
+    filename_temp = NULL;
+  }
   if(!jpegoutput2_file) error("Could not open/create image-file");
-  status = mmal_port_parameter_set_boolean(camera->output[2], MMAL_PARAMETER_CAPTURE, 1);
-  if(status != MMAL_SUCCESS) error("Could not start image capture");
+  
   printf("Capturing image\n");
   if(status_filename != 0) {
     if(!timelapse) {
@@ -697,7 +788,18 @@ void capt_img (void) {
     }
   }
   capturing = 1;
-
+  //fprintf(stderr, "%s: capturing=1\n", __FUNCTION__);
+  
+  status = mmal_port_parameter_set_boolean(camera->output[2], MMAL_PARAMETER_CAPTURE, 1);
+  if(status != MMAL_SUCCESS)
+    error("Could not start image capture");
+  else {
+    // Wait for capture to complete
+    // For some reason using vcos_semaphore_wait_timeout sometimes returns immediately with bad parameter error
+    // even though it appears to be all correct, so reverting to untimed one until figure out why its erratic
+    vcos_semaphore_wait(&callback_data.complete_semaphore);
+  }
+  fprintf(stderr, "%s: image complete\n", __FUNCTION__);
 }
 
 int main (int argc, char* argv[]) {
@@ -708,7 +810,7 @@ int main (int argc, char* argv[]) {
   FILE *fp;
 
   bcm_host_init();
-  
+
   //
   // read arguments
   //
@@ -881,7 +983,10 @@ int main (int argc, char* argv[]) {
       }
  
     }
-    if(line) free(line);
+    if(line) {
+      free(line);
+      line = NULL;
+    }
   }
   
   //
@@ -954,8 +1059,14 @@ int main (int argc, char* argv[]) {
                 asprintf(&filename_temp2, h264_filename, video_cnt, localTime->tm_year+1900, localTime->tm_mon+1, localTime->tm_mday, localTime->tm_hour, localTime->tm_min, localTime->tm_sec);
               }
               h264output_file = fopen(filename_temp2, "wb");
-              free(filename_temp2);
-              if(mp4box) free(filename_temp);
+              if(filename_temp2) {
+                free(filename_temp2);
+                filename_temp2 = NULL;
+              }
+              if(mp4box && filename_temp) {
+                free(filename_temp);
+                filename_temp = NULL;
+              }
               if(!h264output_file) error("Could not open/create video-file");
               status = mmal_port_enable(h264encoder->output[0], h264encoder_buffer_callback);
               if(status != MMAL_SUCCESS) error("Could not enable video port");
@@ -976,6 +1087,7 @@ int main (int argc, char* argv[]) {
                 fclose(status_file);
               }
               capturing = 1;
+              fprintf(stderr, "%s(%d): capturing=1\n", __FUNCTION__, __LINE__);
             }
           }
           else {
@@ -1004,9 +1116,18 @@ int main (int argc, char* argv[]) {
                 if(system(cmd_temp) == -1) error("Could not start MP4Box");
                 asprintf(&filename_temp2, "%s.h264", filename_temp);
                 remove(filename_temp2);
-                free(filename_temp);
-                free(filename_temp2);
-                free(cmd_temp);
+                if(filename_temp) {
+                  free(filename_temp);
+                  filename_temp = NULL;
+                }
+                if(filename_temp2) {
+                  free(filename_temp2);
+                  filename_temp2 = NULL;
+                }
+                if(cmd_temp) {
+                  free(cmd_temp);
+                  cmd_temp = NULL;
+                }
                 printf("Boxing stopped\n");
               }
               video_cnt++;
@@ -1017,6 +1138,7 @@ int main (int argc, char* argv[]) {
                 fclose(status_file);
               }
               capturing = 0;
+              fprintf(stderr, "%s(%d): capturing=0\n", __FUNCTION__, __LINE__);
             }
           }
         }
@@ -1236,9 +1358,7 @@ int main (int argc, char* argv[]) {
             }
           }
           else {
-            start_all();
-            idle = 0;
-            printf("Stream continued\n");
+            start_all(); idle = 0; printf("Stream continued\n");
             if(status_filename != 0) {
               status_file = fopen(status_filename, "w");
               fprintf(status_file, "ready");
