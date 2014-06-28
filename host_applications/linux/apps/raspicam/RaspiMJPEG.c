@@ -91,10 +91,11 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 MMAL_STATUS_T status;
-MMAL_COMPONENT_T *camera = 0, *jpegencoder = 0, *jpegencoder2 = 0, *h264encoder = 0, *resizer = 0;
-MMAL_CONNECTION_T *con_cam_res, *con_res_jpeg, *con_cam_h264, *con_cam_jpeg;
+MMAL_COMPONENT_T *camera = NULL, *jpegencoder = NULL, *jpegencoder2 = NULL, *h264encoder = NULL, *resizer = NULL;
+MMAL_CONNECTION_T *con_cam_res = NULL, *con_res_jpeg = NULL, *con_cam_h264 = NULL, *con_cam_jpeg = NULL;
+MMAL_POOL_T *pool_jpegencoder = NULL, *pool_jpegencoder2 = NULL, *pool_h264encoder = NULL;
+
 FILE *jpegoutput_file = NULL, *jpegoutput2_file = NULL, *h264output_file = NULL, *status_file = NULL;
-MMAL_POOL_T *pool_jpegencoder, *pool_jpegencoder2, *pool_h264encoder;
 unsigned int tl_cnt=0, mjpeg_cnt=0, width=320, divider=5, image_cnt=0, image2_cnt=0, video_cnt=0;
 unsigned int cam_setting_sharpness=0, cam_setting_contrast=0, cam_setting_brightness=50, cam_setting_saturation=0, cam_setting_iso=0, cam_setting_vs=0, cam_setting_ec=0, cam_setting_rotation=0, cam_setting_quality=85, cam_setting_raw=0, cam_setting_ce_en=0, cam_setting_ce_u=128, cam_setting_ce_v=128, cam_setting_hflip=0, cam_setting_vflip=0;
 char cam_setting_em[20]="auto", cam_setting_wb[20]="auto", cam_setting_ie[20]="none", cam_setting_mm[20]="average";
@@ -484,6 +485,17 @@ void cam_set_bitrate () {
   if(status != MMAL_SUCCESS) error("Could not set bitrate");
 }
 
+/**
+ * Checks if specified port is valid and enabled, then disables it
+ *
+ * @param port  Pointer the port
+ *
+ */
+static void check_disable_port(MMAL_PORT_T *port) {
+  if (port && port->is_enabled)
+     mmal_port_disable(port);
+}              
+
 void start_all (void) {
   MMAL_ES_FORMAT_T *format;
   int max, i;
@@ -728,7 +740,7 @@ void start_all (void) {
     status = mmal_port_send_buffer(jpegencoder2->output[0], jpegbuffer2);
     if(status != MMAL_SUCCESS) error("Could not send buffers to jpeg port 2");
   }
-#if 1
+  
   //
   // settings
   //
@@ -751,32 +763,75 @@ void start_all (void) {
   cam_set_quality();
   cam_set_raw();
   cam_set_bitrate();
-#endif
+  
   fprintf(stderr, "%s: <<<\n", __FUNCTION__);   
 }
 
 
-void stop_all (void) {
-
+void stop_all(void) {
   fprintf(stderr, "%s: >>>\n", __FUNCTION__);
-  mmal_port_disable(jpegencoder->output[0]);
-#if 1
-  mmal_port_disable(jpegencoder2->output[0]);
+  
+  //
+  // disable ports
+  //
+  check_disable_port(jpegencoder->output[0]);
+  check_disable_port(jpegencoder2->output[0]);
+  check_disable_port(h264encoder->output[0]);
+  
+  //
+  // destroy connections
+  //
+  if(con_cam_res)   mmal_connection_destroy(con_cam_res);
+  if(con_res_jpeg)  mmal_connection_destroy(con_res_jpeg);
+  if(con_cam_jpeg)  mmal_connection_destroy(con_cam_jpeg);
+  if(con_cam_h264)  mmal_connection_destroy(con_cam_h264);
+  
+  //
+  // cleanup semaphores
+  //
   vcos_semaphore_delete(&callback_data.complete_semaphore);
-#endif
-  mmal_connection_destroy(con_cam_res);
-  mmal_connection_destroy(con_res_jpeg);
-  mmal_port_pool_destroy(jpegencoder->output[0], pool_jpegencoder);
-  mmal_component_disable(jpegencoder);
-#if 1
-  mmal_port_pool_destroy(jpegencoder2->output[0], pool_jpegencoder2);
-  mmal_component_disable(jpegencoder2);
-  mmal_component_destroy(jpegencoder2);
-#endif
-  mmal_component_disable(camera);
-  mmal_component_destroy(jpegencoder);
-  mmal_component_destroy(h264encoder);
-  mmal_component_destroy(camera);
+  
+  //
+  // disable components
+  //
+  if(jpegencoder)   mmal_component_disable(jpegencoder);
+  if(jpegencoder2)  mmal_component_disable(jpegencoder2);
+  if(h264encoder)   mmal_component_disable(h264encoder);
+  if(resizer)       mmal_component_disable(resizer);
+  if(camera)        mmal_component_disable(camera);
+  
+  //
+  // destroy components and associated pools
+  //
+  if(pool_jpegencoder)
+    mmal_port_pool_destroy(jpegencoder->output[0], pool_jpegencoder);
+  if(jpegencoder) {
+    mmal_component_destroy(jpegencoder);
+    jpegencoder = NULL;
+  }
+  
+  if(pool_jpegencoder2)
+    mmal_port_pool_destroy(jpegencoder2->output[0], pool_jpegencoder2);
+  if(jpegencoder2) {
+    mmal_component_destroy(jpegencoder2);
+    jpegencoder2 = NULL;
+  }
+  
+  if(h264encoder) {
+    mmal_component_destroy(h264encoder);
+    h264encoder = NULL;
+  }
+  
+  if(resizer) {
+    mmal_component_destroy(resizer);
+    resizer = NULL;
+  }
+  
+  if(camera) {
+    mmal_component_destroy(camera);
+    camera = NULL;
+  }
+  
   fprintf(stderr, "%s: <<<\n", __FUNCTION__);
 }
 
