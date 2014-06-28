@@ -49,6 +49,15 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  * SIGTERM.
  *
  * Usage information in README_RaspiMJPEG.md
+ *
+ *
+ * General connection overview:
+ *
+ *                       OUT -->  IN       OUT --> IN             ATTACHED
+ *   --------------------------------------------------------------------------------------------
+ *   camera port 0 / preview --> image resizer --> JPEG encoder 1 <-- callback 1 to save JPEG
+ *   camera port 1 / video                     --> H264 encoder   <-- callback to save video file
+ *   camera port 2 / stills                    --> JPEG encoder 2 <-- callback 2 to save JPEG
  */
 
 #define VERSION "4.2"
@@ -74,6 +83,12 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "interface/mmal/util/mmal_util_params.h"
 #include "interface/mmal/util/mmal_default_components.h"
 #include "interface/mmal/util/mmal_connection.h"
+
+// Standard port setting for the camera component
+#define MMAL_CAMERA_PREVIEW_PORT 0
+#define MMAL_CAMERA_VIDEO_PORT 1
+#define MMAL_CAMERA_CAPTURE_PORT 2
+
 
 MMAL_STATUS_T status;
 MMAL_COMPONENT_T *camera = 0, *jpegencoder = 0, *jpegencoder2 = 0, *h264encoder = 0, *resizer = 0;
@@ -417,11 +432,11 @@ void cam_set_ce () {
 }
 
 void cam_set_rotation () {
-  status = mmal_port_parameter_set_int32(camera->output[0], MMAL_PARAMETER_ROTATION, cam_setting_rotation);
+  status = mmal_port_parameter_set_int32(camera->output[MMAL_CAMERA_PREVIEW_PORT], MMAL_PARAMETER_ROTATION, cam_setting_rotation);
   if(status != MMAL_SUCCESS) error("Could not set rotation (0)");
-  status = mmal_port_parameter_set_int32(camera->output[1], MMAL_PARAMETER_ROTATION, cam_setting_rotation);
+  status = mmal_port_parameter_set_int32(camera->output[MMAL_CAMERA_VIDEO_PORT], MMAL_PARAMETER_ROTATION, cam_setting_rotation);
   if(status != MMAL_SUCCESS) error("Could not set rotation (1)");
-  status = mmal_port_parameter_set_int32(camera->output[2], MMAL_PARAMETER_ROTATION, cam_setting_rotation);
+  status = mmal_port_parameter_set_int32(camera->output[MMAL_CAMERA_CAPTURE_PORT], MMAL_PARAMETER_ROTATION, cam_setting_rotation);
   if(status != MMAL_SUCCESS) error("Could not set rotation (2)");
 }
 
@@ -430,11 +445,11 @@ void cam_set_flip () {
   if (cam_setting_hflip && cam_setting_vflip) mirror.value = MMAL_PARAM_MIRROR_BOTH;
   else if (cam_setting_hflip) mirror.value = MMAL_PARAM_MIRROR_HORIZONTAL;
   else if (cam_setting_vflip) mirror.value = MMAL_PARAM_MIRROR_VERTICAL;
-  status = mmal_port_parameter_set(camera->output[0], &mirror.hdr);
+  status = mmal_port_parameter_set(camera->output[MMAL_CAMERA_PREVIEW_PORT], &mirror.hdr);
   if(status != MMAL_SUCCESS) error("Could not set flip (0)");
-  status = mmal_port_parameter_set(camera->output[1], &mirror.hdr);
+  status = mmal_port_parameter_set(camera->output[MMAL_CAMERA_VIDEO_PORT], &mirror.hdr);
   if(status != MMAL_SUCCESS) error("Could not set flip (1)");
-  status = mmal_port_parameter_set(camera->output[2], &mirror.hdr);
+  status = mmal_port_parameter_set(camera->output[MMAL_CAMERA_CAPTURE_PORT], &mirror.hdr);
   if(status != MMAL_SUCCESS) error("Could not set flip (2)");
 }
 
@@ -459,7 +474,7 @@ void cam_set_quality () {
 }
 
 void cam_set_raw () {
-  status = mmal_port_parameter_set_boolean(camera->output[2], MMAL_PARAMETER_ENABLE_RAW_CAPTURE, cam_setting_raw);
+  status = mmal_port_parameter_set_boolean(camera->output[MMAL_CAMERA_CAPTURE_PORT], MMAL_PARAMETER_ENABLE_RAW_CAPTURE, cam_setting_raw);
   if(status != MMAL_SUCCESS) error("Could not set raw layer");
 }
 
@@ -501,7 +516,7 @@ void start_all (void) {
   };
   mmal_port_parameter_set(camera->control, &cam_config.hdr);
   
-  format = camera->output[0]->format;
+  format = camera->output[MMAL_CAMERA_PREVIEW_PORT]->format;
   format->es->video.width = VCOS_ALIGN_UP(video_width, 32);
   format->es->video.height = VCOS_ALIGN_UP(video_height, 16);
   format->es->video.crop.x = 0;
@@ -510,10 +525,10 @@ void start_all (void) {
   format->es->video.crop.height = video_height;
   format->es->video.frame_rate.num = 0;
   format->es->video.frame_rate.den = 1;
-  status = mmal_port_format_commit(camera->output[0]);
+  status = mmal_port_format_commit(camera->output[MMAL_CAMERA_PREVIEW_PORT]);
   if(status != MMAL_SUCCESS) error("Coult not set preview format");
 
-  format = camera->output[1]->format;
+  format = camera->output[MMAL_CAMERA_VIDEO_PORT]->format;
   format->encoding_variant = MMAL_ENCODING_I420;
   format->encoding = MMAL_ENCODING_OPAQUE;
   format->es->video.width = VCOS_ALIGN_UP(video_width, 32);
@@ -524,12 +539,12 @@ void start_all (void) {
   format->es->video.crop.height = video_height;
   format->es->video.frame_rate.num = video_fps;
   format->es->video.frame_rate.den = 1;
-  status = mmal_port_format_commit(camera->output[1]);
+  status = mmal_port_format_commit(camera->output[MMAL_CAMERA_VIDEO_PORT]);
   if(status != MMAL_SUCCESS) error("Could not set video format");
-  if(camera->output[1]->buffer_num < 3)
-    camera->output[1]->buffer_num = 3;
+  if(camera->output[MMAL_CAMERA_VIDEO_PORT]->buffer_num < 3)
+    camera->output[MMAL_CAMERA_VIDEO_PORT]->buffer_num = 3;
   
-  format = camera->output[2]->format;
+  format = camera->output[MMAL_CAMERA_CAPTURE_PORT]->format;
   format->encoding = MMAL_ENCODING_OPAQUE;
   format->es->video.width = VCOS_ALIGN_UP(image_width, 32);
   format->es->video.height = VCOS_ALIGN_UP(image_height, 16);
@@ -539,10 +554,10 @@ void start_all (void) {
   format->es->video.crop.height = image_height;
   format->es->video.frame_rate.num = 0;
   format->es->video.frame_rate.den = 1;
-  status = mmal_port_format_commit(camera->output[2]);
+  status = mmal_port_format_commit(camera->output[MMAL_CAMERA_CAPTURE_PORT]);
   if(status != MMAL_SUCCESS) error("Could not set still format");
-  if(camera->output[2]->buffer_num < 3)
-    camera->output[2]->buffer_num = 3;
+  if(camera->output[MMAL_CAMERA_CAPTURE_PORT]->buffer_num < 3)
+    camera->output[MMAL_CAMERA_CAPTURE_PORT]->buffer_num = 3;
 
   status = mmal_component_enable(camera);
   if(status != MMAL_SUCCESS) error("Could not enable camera");
@@ -664,7 +679,7 @@ void start_all (void) {
   //
   // connect
   //
-  status = mmal_connection_create(&con_cam_res, camera->output[0], resizer->input[0], MMAL_CONNECTION_FLAG_TUNNELLING | MMAL_CONNECTION_FLAG_ALLOCATION_ON_INPUT);
+  status = mmal_connection_create(&con_cam_res, camera->output[MMAL_CAMERA_PREVIEW_PORT], resizer->input[0], MMAL_CONNECTION_FLAG_TUNNELLING | MMAL_CONNECTION_FLAG_ALLOCATION_ON_INPUT);
   if(status != MMAL_SUCCESS) error("Could not create connection camera -> resizer");
   status = mmal_connection_enable(con_cam_res);
   if(status != MMAL_SUCCESS) error("Could not enable connection camera -> resizer");
@@ -688,7 +703,7 @@ void start_all (void) {
     if(status != MMAL_SUCCESS) error("Could not send buffers to jpeg port");
   }
 
-  status = mmal_connection_create(&con_cam_jpeg, camera->output[2], jpegencoder2->input[0], MMAL_CONNECTION_FLAG_TUNNELLING | MMAL_CONNECTION_FLAG_ALLOCATION_ON_INPUT);
+  status = mmal_connection_create(&con_cam_jpeg, camera->output[MMAL_CAMERA_CAPTURE_PORT], jpegencoder2->input[0], MMAL_CONNECTION_FLAG_TUNNELLING | MMAL_CONNECTION_FLAG_ALLOCATION_ON_INPUT);
   if(status != MMAL_SUCCESS) error("Could not create connection camera -> encoder");
   status = mmal_connection_enable(con_cam_jpeg);
   if(status != MMAL_SUCCESS) error("Could not enable connection camera -> encoder");
@@ -790,7 +805,7 @@ void capt_img (void) {
   capturing = 1;
   //fprintf(stderr, "%s: capturing=1\n", __FUNCTION__);
   
-  status = mmal_port_parameter_set_boolean(camera->output[2], MMAL_PARAMETER_CAPTURE, 1);
+  status = mmal_port_parameter_set_boolean(camera->output[MMAL_CAMERA_CAPTURE_PORT], MMAL_PARAMETER_CAPTURE, 1);
   if(status != MMAL_SUCCESS)
     error("Could not start image capture");
   else {
@@ -1045,7 +1060,7 @@ int main (int argc, char* argv[]) {
               if(status != MMAL_SUCCESS) error("Could not enable h264encoder");
               pool_h264encoder = mmal_port_pool_create(h264encoder->output[0], h264encoder->output[0]->buffer_num, h264encoder->output[0]->buffer_size);
               if(!pool_h264encoder) error("Could not create pool");
-              status = mmal_connection_create(&con_cam_h264, camera->output[1], h264encoder->input[0], MMAL_CONNECTION_FLAG_TUNNELLING | MMAL_CONNECTION_FLAG_ALLOCATION_ON_INPUT);
+              status = mmal_connection_create(&con_cam_h264, camera->output[MMAL_CAMERA_VIDEO_PORT], h264encoder->input[0], MMAL_CONNECTION_FLAG_TUNNELLING | MMAL_CONNECTION_FLAG_ALLOCATION_ON_INPUT);
               if(status != MMAL_SUCCESS) error("Could not create connecton camera -> video converter");
               status = mmal_connection_enable(con_cam_h264);
               if(status != MMAL_SUCCESS) error("Could not enable connection camera -> video converter");
@@ -1077,7 +1092,7 @@ int main (int argc, char* argv[]) {
                 status = mmal_port_send_buffer(h264encoder->output[0], h264buffer);
                 if(status != MMAL_SUCCESS) error("Could not send buffers to video port");
               }
-              mmal_port_parameter_set_boolean(camera->output[1], MMAL_PARAMETER_CAPTURE, 1);
+              mmal_port_parameter_set_boolean(camera->output[MMAL_CAMERA_VIDEO_PORT], MMAL_PARAMETER_CAPTURE, 1);
               if(status != MMAL_SUCCESS) error("Could not start capture");
               printf("Capturing started\n");
               if(status_filename != 0) {
@@ -1092,7 +1107,7 @@ int main (int argc, char* argv[]) {
           }
           else {
             if(capturing) {
-              mmal_port_parameter_set_boolean(camera->output[1], MMAL_PARAMETER_CAPTURE, 0);
+              mmal_port_parameter_set_boolean(camera->output[MMAL_CAMERA_VIDEO_PORT], MMAL_PARAMETER_CAPTURE, 0);
               if(status != MMAL_SUCCESS) error("Could not stop capture");
               status = mmal_port_disable(h264encoder->output[0]);
               if(status != MMAL_SUCCESS) error("Could not disable video port");
