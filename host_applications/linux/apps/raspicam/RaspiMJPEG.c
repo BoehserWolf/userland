@@ -116,10 +116,14 @@ typedef struct
 } PORT_USERDATA;
 
 PORT_USERDATA callback_data;
-          
+
+
+// prototypes
+void stop_all(void);
+
+
   
 void error (const char *string) {
-
   fprintf(stderr, "Error: %s\n", string);
   if(status_filename != 0) {
     status_file = fopen(status_filename, "w");
@@ -128,8 +132,9 @@ void error (const char *string) {
       fclose(status_file);
     }
   }
+  // cleanup anything open
+  stop_all();
   exit(1);
-
 }
 
 void term (int signum) {
@@ -1167,8 +1172,10 @@ int main (int argc, char* argv[]) {
               status = mmal_port_disable(h264encoder->output[0]);
               if(status != MMAL_SUCCESS) error("Could not disable video port");
               status = mmal_connection_destroy(con_cam_h264);
+              con_cam_h264 = NULL;
               if(status != MMAL_SUCCESS) error("Could not destroy connection camera -> video encoder");
               mmal_port_pool_destroy(h264encoder->output[0], pool_h264encoder);
+              pool_h264encoder = NULL;
               if(status != MMAL_SUCCESS) error("Could not destroy video buffer pool");
               status = mmal_component_disable(h264encoder);
               if(status != MMAL_SUCCESS) error("Could not disable video converter");
