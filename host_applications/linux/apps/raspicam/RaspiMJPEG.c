@@ -73,6 +73,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <signal.h>
 #include <fcntl.h>
 #include <time.h>
+#include <sys/stat.h>
 
 #include "bcm_host.h"
 #include "interface/vcos/vcos.h"
@@ -89,6 +90,11 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define MMAL_CAMERA_VIDEO_PORT 1
 #define MMAL_CAMERA_CAPTURE_PORT 2
 
+// default settings
+#define MJPG_DEF_CFG_FILE  "/etc/raspimjpeg"
+
+// helper macros
+#define DIM(x)  (sizeof(x) / sizeof(x[0]))
 
 MMAL_STATUS_T status;
 MMAL_COMPONENT_T *camera = NULL, *jpegencoder = NULL, *jpegencoder2 = NULL, *h264encoder = NULL, *resizer = NULL;
@@ -493,7 +499,7 @@ void cam_set_bitrate () {
 /**
  * Checks if specified port is valid and enabled, then disables it
  *
- * @param port  Pointer the port
+ * @param port  Pointer to the port
  *
  */
 static void check_disable_port(MMAL_PORT_T *port) {
@@ -779,9 +785,9 @@ void stop_all(void) {
   //
   // disable ports
   //
-  check_disable_port(jpegencoder->output[0]);
-  check_disable_port(jpegencoder2->output[0]);
-  check_disable_port(h264encoder->output[0]);
+  if(jpegencoder)   check_disable_port(jpegencoder->output[0]);
+  if(jpegencoder2)  check_disable_port(jpegencoder2->output[0]);
+  if(h264encoder)   check_disable_port(h264encoder->output[0]);
   
   //
   // destroy connections
@@ -881,8 +887,9 @@ int main (int argc, char* argv[]) {
 
   int i, max, fd, length;
   char readbuf[30];
-  char *filename_temp, *filename_temp2, *cmd_temp, *line;
-  FILE *fp;
+  char *filename_temp = NULL, *filename_temp2 = NULL, *cmd_temp = NULL, *line = NULL;
+  FILE *fp = NULL;
+  struct stat file_info;
 
   bcm_host_init();
 
@@ -911,9 +918,31 @@ int main (int argc, char* argv[]) {
   }
 
   //
+  // check for valid config file on file system
+  //
+  if(stat(MJPG_DEF_CFG_FILE, &file_info) != 0) {
+    char buf[255] = {0};
+    if(errno == ENOENT) {
+      snprintf(buf, DIM(buf), "file '%s' does not exist", MJPG_DEF_CFG_FILE);
+      error(buf);
+    } else if(errno == EACCES) {
+      snprintf(buf, DIM(buf), "file '%s' no permission", MJPG_DEF_CFG_FILE);
+      error(buf);
+    } else {
+      snprintf(buf, DIM(buf), "file '%s' general error (errno=%d)", MJPG_DEF_CFG_FILE, errno);
+      error(buf);
+    }
+  }
+  if(! S_ISREG(file_info.st_mode)) {
+    char buf[255] = {0};
+    snprintf(buf, DIM(buf), "file '%s' is not a file", MJPG_DEF_CFG_FILE);
+    error(buf);
+  }
+
+  //
   // read config file
   //
-  fp = fopen("/etc/raspimjpeg", "r");
+  fp = fopen(MJPG_DEF_CFG_FILE, "r");
   if(fp != NULL) {
     unsigned int len = 0;
     while((length = getline(&line, &len, fp)) != -1) {
@@ -1113,6 +1142,7 @@ int main (int argc, char* argv[]) {
       close(fd);
 
       if(length) {
+        fprintf(stderr, "%s(%d): got %d bytes from pipe '%s'\n", __FUNCTION__, __LINE__, length, pipe_filename);
         if((readbuf[0]=='c') && (readbuf[1]=='a')) {
           if(readbuf[3]=='1') {
             if(!capturing) {
@@ -1465,9 +1495,9 @@ int main (int argc, char* argv[]) {
             }
           }
         }
-      }
-
+      }  
     }
+    
     if(timelapse) {
       tl_cnt++;
       if(tl_cnt >= time_between_pic) {
