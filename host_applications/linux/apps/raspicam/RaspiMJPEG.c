@@ -685,6 +685,7 @@ void start_all (void) {
   if(status != MMAL_SUCCESS && status != MMAL_ENOSYS) error("Could not create image resizer");
   
   format = resizer->output[0]->format;
+  format->encoding = MMAL_ENCODING_I420;
   format->es->video.width = VCOS_ALIGN_UP(width, 32);
   format->es->video.height = VCOS_ALIGN_UP(height_temp, 16);
   format->es->video.crop.x = 0;
